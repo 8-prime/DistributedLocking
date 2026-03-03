@@ -1,0 +1,6 @@
+{
+  "name": "Zig In-Memory",
+  "description": "Zig HTTP server with sharded RwLock + in-memory lock map, compiled ReleaseFast",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
