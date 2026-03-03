@@ -1,0 +1,212 @@
+package main
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
+)
+
+// BuildImage builds a Docker image from the given solution directory.
+func BuildImage(ctx context.Context, cli *client.Client, solutionDir, tag string) error {
+	tarBuf, err := createTarball(solutionDir)
+	if err != nil {
+		return fmt.Errorf("create tarball: %w", err)
+	}
+
+	opts := types.ImageBuildOptions{
+		Tags:       []string{tag},
+		Dockerfile: "Dockerfile",
+		Remove:     true,
+	}
+
+	resp, err := cli.ImageBuild(ctx, tarBuf, opts)
+	if err != nil {
+		return fmt.Errorf("image build: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Drain output; surface any build errors with full context.
+	dec := json.NewDecoder(resp.Body)
+	var buildLog strings.Builder
+	for {
+		var msg struct {
+			Stream string `json:"stream"`
+			Error  string `json:"error"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("reading build output: %w", err)
+		}
+		if msg.Stream != "" {
+			buildLog.WriteString(msg.Stream)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("docker build error: %s\nbuild log:\n%s", msg.Error, buildLog.String())
+		}
+	}
+	return nil
+}
+
+// RunContainer creates and starts a container, returning its ID and the assigned host port.
+func RunContainer(ctx context.Context, cli *client.Client, tag string, containerPort int) (string, int, error) {
+	hostPort, err := freePort()
+	if err != nil {
+		return "", 0, fmt.Errorf("find free port: %w", err)
+	}
+
+	portSpec := fmt.Sprintf("%d/tcp", containerPort)
+	natPort := nat.Port(portSpec)
+
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image: tag,
+			ExposedPorts: nat.PortSet{
+				natPort: struct{}{},
+			},
+		},
+		&container.HostConfig{
+			PortBindings: nat.PortMap{
+				natPort: []nat.PortBinding{
+					{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", hostPort)},
+				},
+			},
+		},
+		nil, nil, "",
+	)
+	if err != nil {
+		return "", 0, fmt.Errorf("container create: %w", err)
+	}
+
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", 0, fmt.Errorf("container start: %w", err)
+	}
+
+	return resp.ID, hostPort, nil
+}
+
+// WaitHealthy polls GET /healthz until the service returns 200, using exponential backoff.
+func WaitHealthy(ctx context.Context, hostPort, timeoutMs int) error {
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", hostPort)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	delay := 100 * time.Millisecond
+	const maxDelay = 2 * time.Second
+
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("service on port %d not healthy within %dms", hostPort, timeoutMs)
+		}
+
+		resp, err := client.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		delay = time.Duration(math.Min(float64(delay*2), float64(maxDelay)))
+	}
+}
+
+// StopContainer stops and removes the given container.
+func StopContainer(ctx context.Context, cli *client.Client, containerID string) error {
+	timeout := 10
+	if err := cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout}); err != nil {
+		return fmt.Errorf("container stop: %w", err)
+	}
+	if err := cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+		return fmt.Errorf("container remove: %w", err)
+	}
+	return nil
+}
+
+// ImageTag returns the Docker image tag for a solution name.
+func ImageTag(name string) string {
+	slug := strings.ToLower(name)
+	slug = strings.ReplaceAll(slug, " ", "-")
+	return "dl-benchmark-" + slug
+}
+
+// createTarball creates an in-memory tar archive of the given directory.
+func createTarball(dir string) (io.Reader, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		// Use forward slashes in tar headers (required by Docker).
+		rel = filepath.ToSlash(rel)
+
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return &buf, nil
+}
+
+// freePort asks the OS for a free TCP port.
+func freePort() (int, error) {
+	// Bind to :0 to get a random free port, then close and return the port number.
+	// There's a small TOCTOU window, but it's acceptable for local benchmarking.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port, nil
+}

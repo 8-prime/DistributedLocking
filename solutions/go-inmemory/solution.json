@@ -1,0 +1,6 @@
+{
+  "name": "Go In-Memory",
+  "description": "Simple Go HTTP server with in-memory lock map",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
