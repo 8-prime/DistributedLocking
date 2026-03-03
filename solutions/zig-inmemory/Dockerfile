@@ -1,7 +1,7 @@
 FROM alpine:3.21 AS builder
 RUN apk add --no-cache curl xz
-RUN curl -fsSL https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz \
-    | tar -xJ && mv zig-linux-x86_64-0.15.2 /zig
+RUN curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz \
+    | tar -xJ && mv zig-x86_64-linux-0.15.2 /zig
 ENV PATH="/zig:$PATH"
 WORKDIR /app
 COPY . .
