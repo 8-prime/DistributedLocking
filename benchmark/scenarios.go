@@ -13,18 +13,19 @@ import (
 )
 
 type scenarioCfg struct {
-	ID          string
-	Concurrency int
-	KeyPoolSize int
-	Duration    time.Duration
-	Warmup      time.Duration
+	ID            string
+	Concurrency   int
+	KeyPoolSize   int
+	Duration      time.Duration
+	Warmup        time.Duration
+	PartitionKeys bool // if true, each worker gets a unique slice of the key space
 }
 
 var defaultScenarios = []scenarioCfg{
-	{ID: "sequential", Concurrency: 1, KeyPoolSize: 1000},
-	{ID: "low_concurrency", Concurrency: 10, KeyPoolSize: 1000},
-	{ID: "high_concurrency", Concurrency: 100, KeyPoolSize: 10000},
-	{ID: "contention", Concurrency: 50, KeyPoolSize: 5},
+	{ID: "sequential", Concurrency: 1, KeyPoolSize: 1000, PartitionKeys: true},
+	{ID: "low_concurrency", Concurrency: 10, KeyPoolSize: 1000, PartitionKeys: true},
+	{ID: "high_concurrency", Concurrency: 100, KeyPoolSize: 10000, PartitionKeys: true},
+	{ID: "contention", Concurrency: 50, KeyPoolSize: 5, PartitionKeys: false},
 	// list_heavy handled specially
 }
 
@@ -127,11 +128,23 @@ func runScenario(baseURL string, cfg scenarioCfg) ScenarioResult {
 	var errCount, conflictCount, totalCount atomic.Int64
 
 	buildWorker := func(id int) *worker {
-		keys := make([]string, cfg.KeyPoolSize)
-		// Give each worker a unique slice of the key space so keys rotate per worker.
-		offset := (id * cfg.KeyPoolSize / cfg.Concurrency) % cfg.KeyPoolSize
-		for j := range keys {
-			keys[j] = fmt.Sprintf("key-%d", (offset+j)%cfg.KeyPoolSize)
+		var keys []string
+		if cfg.PartitionKeys {
+			perWorker := cfg.KeyPoolSize / cfg.Concurrency
+			if perWorker < 1 {
+				perWorker = 1
+			}
+			offset := id * perWorker
+			keys = make([]string, perWorker)
+			for j := range keys {
+				keys[j] = fmt.Sprintf("key-%d", offset+j)
+			}
+		} else {
+			// Contention: all workers share the same key pool
+			keys = make([]string, cfg.KeyPoolSize)
+			for j := range keys {
+				keys[j] = fmt.Sprintf("key-%d", j)
+			}
 		}
 		return &worker{
 			id:        id,
@@ -203,6 +216,7 @@ func runScenario(baseURL string, cfg scenarioCfg) ScenarioResult {
 		conflictRate = float64(conflicts) / float64(total)
 	}
 
+	leakedLocks := checkLeakedLocks(baseURL)
 	return ScenarioResult{
 		ScenarioID:    cfg.ID,
 		RequestsTotal: total,
@@ -214,6 +228,7 @@ func runScenario(baseURL string, cfg scenarioCfg) ScenarioResult {
 		MaxMs:         maxMs(samples),
 		ErrorRate:     errorRate,
 		ConflictRate:  conflictRate,
+		LeakedLocks:   leakedLocks,
 	}
 }
 
@@ -321,6 +336,7 @@ func runListHeavy(baseURL string, warmup, duration time.Duration) ScenarioResult
 		conflictRate = float64(conflicts) / float64(total)
 	}
 
+	leakedLocks := checkLeakedLocks(baseURL)
 	return ScenarioResult{
 		ScenarioID:    "list_heavy",
 		RequestsTotal: total,
@@ -332,14 +348,34 @@ func runListHeavy(baseURL string, warmup, duration time.Duration) ScenarioResult
 		MaxMs:         maxMs(samples),
 		ErrorRate:     errorRate,
 		ConflictRate:  conflictRate,
+		LeakedLocks:   leakedLocks,
 	}
 }
 
+func checkLeakedLocks(baseURL string) int {
+	resp, err := http.Get(baseURL + "/locks")
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Locks []json.RawMessage `json:"locks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return -1
+	}
+	return len(payload.Locks)
+}
+
 func makeKeys(workerID, poolSize, totalWorkers int) []string {
-	keys := make([]string, poolSize)
-	offset := (workerID * poolSize / totalWorkers) % poolSize
+	perWorker := poolSize / totalWorkers
+	if perWorker < 1 {
+		perWorker = 1
+	}
+	offset := workerID * perWorker
+	keys := make([]string, perWorker)
 	for i := range keys {
-		keys[i] = fmt.Sprintf("key-%d", (offset+i)%poolSize)
+		keys[i] = fmt.Sprintf("key-%d", offset+i)
 	}
 	return keys
 }

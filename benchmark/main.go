@@ -179,6 +179,9 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 		result.Scenarios = append(result.Scenarios, sc)
 		fmt.Printf("    %.0f rps, p99=%.1fms, errors=%.2f%%, conflicts=%.2f%%\n",
 			sc.RPS, sc.P99Ms, sc.ErrorRate*100, sc.ConflictRate*100)
+		if sc.LeakedLocks > 0 {
+			fmt.Printf("    WARNING: %d locks leaked after scenario\n", sc.LeakedLocks)
+		}
 		time.Sleep(2 * time.Second)
 	}
 
@@ -188,6 +191,9 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 	result.Scenarios = append(result.Scenarios, sc)
 	fmt.Printf("    %.0f rps, p99=%.1fms, errors=%.2f%%, conflicts=%.2f%%\n",
 		sc.RPS, sc.P99Ms, sc.ErrorRate*100, sc.ConflictRate*100)
+	if sc.LeakedLocks > 0 {
+		fmt.Printf("    WARNING: %d locks leaked after scenario\n", sc.LeakedLocks)
+	}
 
 	return result, nil
 }

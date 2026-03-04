@@ -18,6 +18,7 @@ type ScenarioResult struct {
 	MaxMs         float64 `json:"maxMs"`
 	ErrorRate     float64 `json:"errorRate"`
 	ConflictRate  float64 `json:"conflictRate"`
+	LeakedLocks   int     `json:"leakedLocks"`
 }
 
 type SolutionResult struct {

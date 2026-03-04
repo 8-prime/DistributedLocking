@@ -77,10 +77,10 @@ func WriteMarkdown(report Report, path string) error {
 
 	for _, sol := range report.Solutions {
 		sb.WriteString(fmt.Sprintf("### %s\n\n", sol.Name))
-		sb.WriteString("| Scenario | Requests | RPS | P50 ms | P95 ms | P99 ms | Max ms | Error% | Conflict% |\n")
-		sb.WriteString("|---|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("| Scenario | Requests | RPS | P50 ms | P95 ms | P99 ms | Max ms | Error% | Conflict% | Leaked |\n")
+		sb.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, sc := range sol.Scenarios {
-			sb.WriteString(fmt.Sprintf("| %s | %d | %.0f | %.1f | %.1f | %.1f | %.1f | %.2f%% | %.2f%% |\n",
+			sb.WriteString(fmt.Sprintf("| %s | %d | %.0f | %.1f | %.1f | %.1f | %.1f | %.2f%% | %.2f%% | %d |\n",
 				sc.ScenarioID,
 				sc.RequestsTotal,
 				sc.RPS,
@@ -90,6 +90,7 @@ func WriteMarkdown(report Report, path string) error {
 				sc.MaxMs,
 				sc.ErrorRate*100,
 				sc.ConflictRate*100,
+				sc.LeakedLocks,
 			))
 		}
 		sb.WriteString("\n")
