@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(cd /c/Users/hoffm/Documents/Projects/DistributedLocking/solutions/zig-inmemory && zig build 2>&1)"
-    ]
-  }
-}
