@@ -173,9 +173,15 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 		scenarios[i].Warmup = warmup
 	}
 
+	aborted := false
 	for _, cfg := range scenarios {
 		fmt.Printf("  Running scenario: %s ...\n", cfg.ID)
-		sc := runScenario(baseURL, cfg)
+		sc, err := runScenario(baseURL, cfg)
+		if err != nil {
+			fmt.Printf("    TIMEOUT: %v — aborting remaining scenarios\n", err)
+			aborted = true
+			break
+		}
 		result.Scenarios = append(result.Scenarios, sc)
 		fmt.Printf("    %.0f rps, p99=%.1fms, errors=%.2f%%, conflicts=%.2f%%\n",
 			sc.RPS, sc.P99Ms, sc.ErrorRate*100, sc.ConflictRate*100)
@@ -185,14 +191,20 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 		time.Sleep(2 * time.Second)
 	}
 
-	// list_heavy scenario
-	fmt.Println("  Running scenario: list_heavy ...")
-	sc := runListHeavy(baseURL, warmup, duration)
-	result.Scenarios = append(result.Scenarios, sc)
-	fmt.Printf("    %.0f rps, p99=%.1fms, errors=%.2f%%, conflicts=%.2f%%\n",
-		sc.RPS, sc.P99Ms, sc.ErrorRate*100, sc.ConflictRate*100)
-	if sc.LeakedLocks > 0 {
-		fmt.Printf("    WARNING: %d locks leaked after scenario\n", sc.LeakedLocks)
+	if !aborted {
+		// list_heavy scenario
+		fmt.Println("  Running scenario: list_heavy ...")
+		sc, err := runListHeavy(baseURL, warmup, duration)
+		if err != nil {
+			fmt.Printf("    TIMEOUT: %v — aborting\n", err)
+		} else {
+			result.Scenarios = append(result.Scenarios, sc)
+			fmt.Printf("    %.0f rps, p99=%.1fms, errors=%.2f%%, conflicts=%.2f%%\n",
+				sc.RPS, sc.P99Ms, sc.ErrorRate*100, sc.ConflictRate*100)
+			if sc.LeakedLocks > 0 {
+				fmt.Printf("    WARNING: %d locks leaked after scenario\n", sc.LeakedLocks)
+			}
+		}
 	}
 
 	return result, nil
