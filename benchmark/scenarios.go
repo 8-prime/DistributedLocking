@@ -67,7 +67,10 @@ func (w *worker) acquireRelease(ctx context.Context, abort func(error)) {
 			w.errors.Add(1)
 			continue
 		}
-		w.latencies <- elapsed
+		select {
+		case w.latencies <- elapsed:
+		default:
+		}
 
 		switch statusCode {
 		case http.StatusConflict:
@@ -98,7 +101,10 @@ func (w *worker) acquireRelease(ctx context.Context, abort func(error)) {
 			w.errors.Add(1)
 			continue
 		}
-		w.latencies <- elapsed
+		select {
+		case w.latencies <- elapsed:
+		default:
+		}
 	}
 }
 
@@ -175,9 +181,28 @@ func runScenario(baseURL string, cfg scenarioCfg) (ScenarioResult, error) {
 	abortCtx, abort := context.WithCancelCause(context.Background())
 	defer abort(nil)
 
-	runPhase := func(dur time.Duration) error {
+	runPhase := func(label string, dur time.Duration) error {
 		phaseCtx, phaseCancel := context.WithTimeout(abortCtx, dur)
 		defer phaseCancel()
+
+		// Progress ticker: prints ops/s every 2s so hangs are immediately visible.
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			prev := totalCount.Load()
+			prevT := time.Now()
+			for {
+				select {
+				case <-phaseCtx.Done():
+					return
+				case now := <-ticker.C:
+					cur := totalCount.Load()
+					rate := float64(cur-prev) / now.Sub(prevT).Seconds()
+					fmt.Printf("    [%s/%s] %.0f ops/s (%d total)\n", cfg.ID, label, rate, cur)
+					prev, prevT = cur, now
+				}
+			}
+		}()
 
 		var wg sync.WaitGroup
 		for i := 0; i < cfg.Concurrency; i++ {
@@ -198,7 +223,7 @@ func runScenario(baseURL string, cfg scenarioCfg) (ScenarioResult, error) {
 
 	// Warmup — discard metrics
 	if cfg.Warmup > 0 {
-		if err := runPhase(cfg.Warmup); err != nil {
+		if err := runPhase("warmup", cfg.Warmup); err != nil {
 			return ScenarioResult{ScenarioID: cfg.ID}, err
 		}
 		errCount.Store(0)
@@ -211,7 +236,7 @@ func runScenario(baseURL string, cfg scenarioCfg) (ScenarioResult, error) {
 
 	// Measurement
 	start := time.Now()
-	if err := runPhase(cfg.Duration); err != nil {
+	if err := runPhase("measure", cfg.Duration); err != nil {
 		return ScenarioResult{ScenarioID: cfg.ID}, err
 	}
 	elapsed := time.Since(start)
@@ -323,7 +348,10 @@ func runListHeavy(baseURL string, warmup, duration time.Duration) (ScenarioResul
 						errCount.Add(1)
 						continue
 					}
-					latencies <- elapsed
+					select {
+					case latencies <- elapsed:
+					default:
+					}
 				}
 			}()
 		}
