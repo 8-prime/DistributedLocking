@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,11 +66,6 @@ func BuildImage(ctx context.Context, cli *client.Client, solutionDir, tag string
 
 // RunContainer creates and starts a container, returning its ID and the assigned host port.
 func RunContainer(ctx context.Context, cli *client.Client, tag string, containerPort int) (string, int, error) {
-	hostPort, err := freePort()
-	if err != nil {
-		return "", 0, fmt.Errorf("find free port: %w", err)
-	}
-
 	portSpec := fmt.Sprintf("%d/tcp", containerPort)
 	natPort := nat.Port(portSpec)
 
@@ -84,7 +79,7 @@ func RunContainer(ctx context.Context, cli *client.Client, tag string, container
 		&container.HostConfig{
 			PortBindings: nat.PortMap{
 				natPort: []nat.PortBinding{
-					{HostIP: "127.0.0.1", HostPort: fmt.Sprintf("%d", hostPort)},
+					{HostIP: "127.0.0.1", HostPort: ""}, // let Docker pick
 				},
 			},
 		},
@@ -98,7 +93,32 @@ func RunContainer(ctx context.Context, cli *client.Client, tag string, container
 		return "", 0, fmt.Errorf("container start: %w", err)
 	}
 
-	return resp.ID, hostPort, nil
+	// Read the port Docker actually assigned.
+	// NetworkSettings.Ports may be transiently empty right after ContainerStart
+	// on some Docker Desktop setups, so retry briefly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		inspect, err := cli.ContainerInspect(ctx, resp.ID)
+		if err != nil {
+			return "", 0, fmt.Errorf("container inspect: %w", err)
+		}
+		bindings := inspect.NetworkSettings.Ports[natPort]
+		if len(bindings) > 0 {
+			hostPort, err := strconv.Atoi(bindings[0].HostPort)
+			if err != nil {
+				return "", 0, fmt.Errorf("parse host port %q: %w", bindings[0].HostPort, err)
+			}
+			return resp.ID, hostPort, nil
+		}
+		if time.Now().After(deadline) {
+			return "", 0, fmt.Errorf("no port binding found for %s after 5s", portSpec)
+		}
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // WaitHealthy polls GET /healthz until the service returns 200, using exponential backoff.
@@ -196,17 +216,4 @@ func createTarball(dir string) (io.Reader, error) {
 		return nil, err
 	}
 	return &buf, nil
-}
-
-// freePort asks the OS for a free TCP port.
-func freePort() (int, error) {
-	// Bind to :0 to get a random free port, then close and return the port number.
-	// There's a small TOCTOU window, but it's acceptable for local benchmarking.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	return port, nil
 }
