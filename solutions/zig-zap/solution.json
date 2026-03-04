@@ -1,0 +1,6 @@
+{
+  "name": "Zig ZAP In-Memory",
+  "description": "Zig Zap HttpServer with sharded locks",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
