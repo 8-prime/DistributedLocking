@@ -25,14 +25,14 @@ func newStore() *store {
 func (s *store) acquire(key, lockee string, force bool) (Lock, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if existing, ok := s.locks[key]; ok && !force {
-		return existing, false
+	existing, ok := s.locks[key]
+	if !ok || force || existing.Lockee == lockee {
+		l := Lock{Key: key, Lockee: lockee, Since: time.Now().UTC()}
+		s.locks[key] = l
+		return l, true
 	}
 
-	l := Lock{Key: key, Lockee: lockee, Since: time.Now().UTC()}
-	s.locks[key] = l
-	return l, true
+	return existing, false
 }
 
 func (s *store) release(key, lockee string) (int, string) {
