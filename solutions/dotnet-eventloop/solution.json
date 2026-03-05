@@ -1,0 +1,6 @@
+{
+  "name": "Dotnet Eventloop",
+  "description": "Simple ASP.NET HTTP server with an eventloop and in-memory lock dictionary",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
