@@ -165,6 +165,13 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 	fmt.Println("Service ready.")
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", hostPort)
+
+	fmt.Println("Validating spec compliance ...")
+	if err := validateSpec(baseURL); err != nil {
+		return SolutionResult{}, fmt.Errorf("spec validation failed: %w", err)
+	}
+	fmt.Println("Spec validation passed.")
+
 	result := SolutionResult{Name: manifest.Name}
 
 	scenarios := defaultScenarios
