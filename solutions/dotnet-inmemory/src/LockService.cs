@@ -5,7 +5,7 @@ namespace dotnet_inmemory;
 
 public struct LockEntry
 {
-    public required string LockId { get; set; }
+    public required string Key { get; set; }
     public required string Lockee { get; set; }
     public DateTime Since { get; set; }
 }
@@ -37,22 +37,35 @@ public class LockService
         await shard.Semaphore.WaitAsync();
         try
         {
-            if (shard.Locks.TryGetValue(lockRequest.Key, out var existingLock) &&
-                existingLock.Lockee != lockRequest.Lockee)
+            if (shard.Locks.TryGetValue(lockRequest.Key, out var existingLock))
             {
-                return new LockResponse
+                if (existingLock.Lockee == lockRequest.Lockee)
                 {
-                    Key = lockRequest.Key,
-                    Lockee = existingLock.Lockee,
-                    Locked = false,
-                };
+                    // Re-acquire by same lockee: succeed without changing Since.
+                    return new LockResponse
+                    {
+                        Key = lockRequest.Key,
+                        Lockee = lockRequest.Lockee,
+                        Locked = true,
+                    };
+                }
+
+                if (!(lockRequest.Force ?? false))
+                {
+                    return new LockResponse
+                    {
+                        Key = lockRequest.Key,
+                        Lockee = existingLock.Lockee,
+                        Locked = false,
+                    };
+                }
             }
 
             shard.Locks[lockRequest.Key] = new LockEntry
             {
+                Key = lockRequest.Key,
                 Lockee = lockRequest.Lockee,
-                LockId = lockRequest.Key,
-                Since = DateTime.UtcNow
+                Since = DateTime.UtcNow,
             };
             return new LockResponse
             {

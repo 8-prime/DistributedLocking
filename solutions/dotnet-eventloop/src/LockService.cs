@@ -6,7 +6,7 @@ namespace dotnet_inmemory;
 
 public struct LockEntry
 {
-    public required string LockId { get; set; }
+    public required string Key { get; set; }
     public required string Lockee { get; set; }
     public DateTime Since { get; set; }
 }
@@ -53,7 +53,7 @@ public class LockService : BackgroundService
                     {
                         _locks[lockMessage.LockId] = new LockEntry
                         {
-                            LockId = lockMessage.LockId,
+                            Key = lockMessage.LockId,
                             Lockee = lockMessage.Lockee,
                             Since = DateTime.UtcNow
                         };
@@ -81,7 +81,7 @@ public class LockService : BackgroundService
                     {
                         _locks[lockMessage.LockId] = new LockEntry
                         {
-                            LockId = lockMessage.LockId,
+                            Key = lockMessage.LockId,
                             Lockee = lockMessage.Lockee,
                             Since = DateTime.UtcNow
                         };
@@ -97,7 +97,7 @@ public class LockService : BackgroundService
                     lockMessage.TaskCompletionSource.SetResult(new LockResponse
                     {
                         Lockee = lockEntry.Lockee,
-                        Key = lockEntry.LockId,
+                        Key = lockEntry.Key,
                         Locked = false
                     });
                     break;
