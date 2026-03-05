@@ -1,0 +1,6 @@
+{
+  "name": "Dotnet In-Memory",
+  "description": "Simple ASP.NET HTTP server with in-memory lock dictionary",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
