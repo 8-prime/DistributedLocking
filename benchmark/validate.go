@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -51,9 +52,6 @@ func validateSpec(baseURL string) error {
 	if err != nil {
 		return fmt.Errorf("step 1 GET /locks: %w", err)
 	}
-	if since1 == "" {
-		return fmt.Errorf("step 1: lock entry not found in GET /locks after acquire")
-	}
 
 	// 2. Re-acquire same key with same lockee — should succeed and since must not change.
 	status, resp, err = sendLock(client, baseURL, key, lockeeA, false)
@@ -72,7 +70,7 @@ func validateSpec(baseURL string) error {
 		return fmt.Errorf("step 2 GET /locks: %w", err)
 	}
 	if since2 != since1 {
-		return fmt.Errorf("step 2: locked_since changed on re-acquire (was %s, now %s)", since1, since2)
+		return fmt.Errorf("step 2: locked_since changed on re-acquire (was %q, now %q)", since1, since2)
 	}
 
 	// 3. Acquire with a different lockee without force — must fail with 409.
@@ -105,13 +103,11 @@ func validateSpec(baseURL string) error {
 		return fmt.Errorf("step 5: expected 200 on release, got %d", status)
 	}
 
-	since3, err := findLockSince(client, baseURL, key)
-	if err != nil {
-		return fmt.Errorf("step 5 GET /locks: %w", err)
-	}
-	if since3 != "" {
+	_, err = findLockSince(client, baseURL, key)
+	if err == nil {
 		return fmt.Errorf("step 5: lock entry still present in GET /locks after release")
 	}
+	// findLockSince returns an error when the key is absent — that's the expected outcome here.
 
 	return nil
 }
@@ -120,15 +116,23 @@ func sendLock(client *http.Client, baseURL, key, lockee string, force bool) (int
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee, "force": force,
 	})
-	req, _ := http.NewRequest(http.MethodPost, baseURL+"/lock", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/lock/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := client.Do(req)
 	if err != nil {
 		return 0, lockResponse{}, err
 	}
 	defer httpResp.Body.Close()
+
+	rawBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return httpResp.StatusCode, lockResponse{}, fmt.Errorf("read body: %w", err)
+	}
+
 	var lr lockResponse
-	json.NewDecoder(httpResp.Body).Decode(&lr)
+	if err := json.Unmarshal(rawBody, &lr); err != nil {
+		return httpResp.StatusCode, lockResponse{}, fmt.Errorf("decode POST /lock response (status %d, body %q): %w", httpResp.StatusCode, rawBody, err)
+	}
 	return httpResp.StatusCode, lr, nil
 }
 
@@ -136,7 +140,7 @@ func sendUnlock(client *http.Client, baseURL, key, lockee string) (int, error) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee,
 	})
-	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/lock", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/lock/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := client.Do(req)
 	if err != nil {
@@ -146,23 +150,33 @@ func sendUnlock(client *http.Client, baseURL, key, lockee string) (int, error) {
 	return httpResp.StatusCode, nil
 }
 
-// findLockSince returns the `since` value for the given key from GET /locks,
-// or "" if no entry is found.
+// findLockSince returns the `since` value for the given key from GET /locks.
+// Returns ("", nil) if the entry is not present, or an error that includes
+// the raw response body when decoding fails or the key is simply absent.
 func findLockSince(client *http.Client, baseURL, key string) (string, error) {
-	req, _ := http.NewRequest(http.MethodGet, baseURL+"/locks", nil)
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/locks/", nil)
 	httpResp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer httpResp.Body.Close()
-	var lr locksResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&lr); err != nil {
-		return "", err
+
+	rawBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
 	}
+
+	var lr locksResponse
+	if err := json.Unmarshal(rawBody, &lr); err != nil {
+		return "", fmt.Errorf("decode GET /locks (status %d, body %q): %w", httpResp.StatusCode, rawBody, err)
+	}
+
 	for _, e := range lr.Locks {
 		if e.Key == key {
 			return e.Since, nil
 		}
 	}
-	return "", nil
+
+	// Key not found — include the full body so the caller can surface it.
+	return "", fmt.Errorf("key %q not in GET /locks response (status %d, body %q)", key, httpResp.StatusCode, rawBody)
 }

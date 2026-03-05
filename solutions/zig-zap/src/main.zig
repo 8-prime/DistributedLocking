@@ -33,6 +33,23 @@ const LockContext = struct {
     }
 };
 
+fn fmtRfc3339(ns: i128, arena: Allocator) ![]const u8 {
+    const secs: u64 = @intCast(@divTrunc(ns, std.time.ns_per_s));
+    const epoch_secs = std.time.epoch.EpochSeconds{ .secs = secs };
+    const day_secs = epoch_secs.getDaySeconds();
+    const epoch_day = epoch_secs.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        @as(u32, year_day.year),
+        @as(u32, month_day.month.numeric()),
+        @as(u32, month_day.day_index) + 1,
+        @as(u32, day_secs.getHoursIntoDay()),
+        @as(u32, day_secs.getMinutesIntoHour()),
+        @as(u32, day_secs.getSecondsIntoMinute()),
+    });
+}
+
 const LockEndpoint = struct {
     path: []const u8 = "/lock/",
     error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
@@ -62,15 +79,37 @@ const LockEndpoint = struct {
         const h = std.hash.Wyhash.hash(0, req.key);
         const shard = &context.shards[h & (N_SHARDS - 1)];
 
-        const Result = enum { acquired, conflict };
+        const ResultTag = enum { acquired, conflict };
+        const Result = struct {
+            tag: ResultTag,
+            // For conflict: the lockee who currently holds it.
+            // For acquired: unused, but set to req.lockee for simplicity.
+            current_lockee: []const u8,
+        };
+
         const result: Result = blk: {
             shard.mutex.lock();
             defer shard.mutex.unlock();
 
-            if (shard.locks.contains(req.key) and req.force != true) break :blk .conflict;
+            const gpa = shard.locks.allocator;
 
-            // dupe into GPA so the strings outlive this request
-            const gpa = shard.locks.allocator; // the GPA you passed in at init
+            if (shard.locks.get(req.key)) |existing| {
+                // Same lockee: idempotent re-acquire, preserve since_ns.
+                if (std.mem.eql(u8, existing.lockee, req.lockee)) {
+                    break :blk .{ .tag = .acquired, .current_lockee = existing.lockee };
+                }
+                // Different lockee without force: conflict.
+                if (req.force != true) {
+                    break :blk .{ .tag = .conflict, .current_lockee = existing.lockee };
+                }
+                // Force: remove old entry and free its heap strings.
+                if (shard.locks.fetchRemove(req.key)) |old| {
+                    gpa.free(old.key);
+                    gpa.free(old.value.lockee);
+                }
+            }
+
+            // New acquisition (fresh lock or forced takeover).
             const key_copy = try gpa.dupe(u8, req.key);
             errdefer gpa.free(key_copy);
             const lockee_copy = try gpa.dupe(u8, req.lockee);
@@ -81,11 +120,11 @@ const LockEndpoint = struct {
                 .lockee = lockee_copy,
                 .since_ns = std.time.nanoTimestamp(),
             });
-            break :blk .acquired;
+            break :blk .{ .tag = .acquired, .current_lockee = lockee_copy };
         };
 
-        // Send response AFTER mutex released
-        switch (result) {
+        // Send response AFTER mutex released.
+        switch (result.tag) {
             .acquired => {
                 r.setStatus(.ok);
                 const response_body = std.fmt.allocPrint(arena, "{{\"locked\":true,\"key\":\"{s}\",\"lockee\":\"{s}\"}}\n", .{ req.key, req.lockee }) catch {
@@ -96,7 +135,7 @@ const LockEndpoint = struct {
             },
             .conflict => {
                 r.setStatus(.conflict);
-                const response_body = std.fmt.allocPrint(arena, "{{\"locked\":false,\"key\":\"{s}\",\"lockee\":\"{s}\"}}\n", .{ req.key, req.lockee }) catch {
+                const response_body = std.fmt.allocPrint(arena, "{{\"locked\":false,\"key\":\"{s}\",\"currentLockee\":\"{s}\"}}\n", .{ req.key, result.current_lockee }) catch {
                     r.setStatus(.internal_server_error);
                     return r.sendBody("failed to format response");
                 };
@@ -135,9 +174,10 @@ const LockEndpoint = struct {
             const existing = shard.locks.get(req.key);
             if (existing == null) break :blk .not_found;
             if (!std.mem.eql(u8, existing.?.lockee, req.lockee)) break :blk .forbidden;
-            _ = shard.locks.remove(req.key);
-            shard.locks.allocator.free(existing.?.key);
-            shard.locks.allocator.free(existing.?.lockee);
+            if (shard.locks.fetchRemove(req.key)) |old| {
+                shard.locks.allocator.free(old.key);
+                shard.locks.allocator.free(old.value.lockee);
+            }
             break :blk .released;
         };
 
@@ -180,7 +220,8 @@ const LocksEndpoint = struct {
         try json_buf.appendSlice(arena, "{\"locks\":[");
         for (all_locks.items, 0..) |lock, i| {
             if (i > 0) try json_buf.appendSlice(arena, ",");
-            const entry = try std.fmt.allocPrint(arena, "{{\"key\":\"{s}\",\"lockee\":\"{s}\",\"since\":\"{d}\"}}", .{ lock.key, lock.lockee, lock.since_ns });
+            const since_str = try fmtRfc3339(lock.since_ns, arena);
+            const entry = try std.fmt.allocPrint(arena, "{{\"key\":\"{s}\",\"lockee\":\"{s}\",\"since\":\"{s}\"}}", .{ lock.key, lock.lockee, since_str });
             try json_buf.appendSlice(arena, entry);
         }
         try json_buf.appendSlice(arena, "]}");
