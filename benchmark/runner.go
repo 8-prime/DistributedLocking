@@ -43,7 +43,7 @@ func discoverSolutions(root string) ([]string, error) {
 	return dirs, nil
 }
 
-func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warmup, duration time.Duration) (SolutionResult, error) {
+func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warmup, duration time.Duration, networkName string) (SolutionResult, error) {
 	// Load manifest.
 	manifestPath := filepath.Join(dir, "solution.json")
 	data, err := os.ReadFile(manifestPath)
@@ -64,9 +64,24 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 	}
 
 	fmt.Println("Starting container ...")
-	containerID, hostPort, err := RunContainer(ctx, cli, tag, manifest.Port)
-	if err != nil {
-		return SolutionResult{}, fmt.Errorf("run container: %w", err)
+	var containerID string
+	var baseURL string
+	if networkName != "" {
+		cName := ContainerName(manifest.Name)
+		var err error
+		containerID, err = RunContainerOnNetwork(ctx, cli, tag, manifest.Port, networkName, cName)
+		if err != nil {
+			return SolutionResult{}, fmt.Errorf("run container: %w", err)
+		}
+		baseURL = fmt.Sprintf("http://%s:%d", cName, manifest.Port)
+	} else {
+		var hostPort int
+		var err error
+		containerID, hostPort, err = RunContainer(ctx, cli, tag, manifest.Port)
+		if err != nil {
+			return SolutionResult{}, fmt.Errorf("run container: %w", err)
+		}
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 	}
 
 	defer func() {
@@ -80,13 +95,11 @@ func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warm
 	if timeoutMs == 0 {
 		timeoutMs = 10000
 	}
-	fmt.Printf("Waiting for service on port %d ...\n", hostPort)
-	if err := WaitHealthy(ctx, hostPort, timeoutMs); err != nil {
+	fmt.Println("Waiting for service ...")
+	if err := WaitHealthy(ctx, baseURL, timeoutMs); err != nil {
 		return SolutionResult{}, fmt.Errorf("wait healthy: %w", err)
 	}
 	fmt.Println("Service ready.")
-
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", hostPort)
 
 	fmt.Println("Validating spec compliance ...")
 	if err := validateSpec(baseURL); err != nil {

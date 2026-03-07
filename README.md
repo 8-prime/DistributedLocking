@@ -18,7 +18,7 @@ The benchmark runner (`benchmark/`) builds each solution's Docker image, starts 
 
 Each scenario runs a 5 s warmup followed by a 15 s measurement window.
 
-**Running the benchmark:**
+**Running locally** (requires Go 1.24+ and Docker):
 
 ```bash
 cd benchmark
@@ -26,6 +26,46 @@ go run . ../solutions               # all solutions
 go run . ../solutions/go-inmemory   # single solution
 go run . --duration 30s --warmup 10s ../solutions
 ```
+
+**Running via Docker** (no Go install needed on the host):
+
+First build the image:
+
+```bash
+docker build -t dl-benchmark-runner .
+```
+
+Then run. The Docker socket must be mounted so the runner can build and start solution containers on the host daemon. The socket path differs by OS:
+
+_Linux / macOS:_
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$(pwd)/results:/results" \
+  dl-benchmark-runner
+```
+
+_Windows (PowerShell) — Docker Desktop exposes a named pipe instead of a socket. Use forward slashes to avoid PowerShell escaping issues:_
+```powershell
+docker run --rm `
+  -v //./pipe/docker_engine://./pipe/docker_engine `
+  -v "${PWD}\results:/results" `
+  dl-benchmark-runner
+```
+
+If that fails with a pipe-not-found error, check the actual pipe name Docker Desktop is using on your machine:
+```powershell
+Get-ChildItem //./pipe/ | Where-Object { $_.Name -like "*docker*" }
+```
+Common alternatives are `dockerDesktopLinuxEngine` or `dockerDesktopEngine`. Substitute whichever appears on both sides of the `-v` mount.
+
+To override duration or warmup, append flags after the image name:
+
+```bash
+dl-benchmark-runner --duration 30s --warmup 10s solutions/
+```
+
+The runner detects it is inside Docker and automatically creates an isolated bridge network for the run. Solution containers are started as siblings on the host daemon (Docker-out-of-Docker via the socket mount) and communicate with the runner over that network. The network is removed when the run completes.
 
 Results are written to `results/` as both JSON and Markdown.
 

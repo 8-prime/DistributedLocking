@@ -1,0 +1,19 @@
+# Build artifacts from local dev
+solutions/**/.zig-cache/
+solutions/**/zig-out/
+solutions/**/obj/
+solutions/**/bin/
+solutions/**/*.exe
+
+# IDE/editor directories
+solutions/**/.idea/
+
+# Compiled benchmark runner binary
+benchmark/benchmark
+benchmark/benchmark.exe
+
+# Results written by the runner
+results/
+
+# Claude session memory
+.claude/

@@ -17,6 +17,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 )
@@ -122,9 +123,9 @@ func RunContainer(ctx context.Context, cli *client.Client, tag string, container
 }
 
 // WaitHealthy polls GET /healthz until the service returns 200, using exponential backoff.
-func WaitHealthy(ctx context.Context, hostPort, timeoutMs int) error {
+func WaitHealthy(ctx context.Context, baseURL string, timeoutMs int) error {
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
-	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", hostPort)
+	url := baseURL + "/healthz"
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	delay := 100 * time.Millisecond
@@ -132,7 +133,7 @@ func WaitHealthy(ctx context.Context, hostPort, timeoutMs int) error {
 
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("service on port %d not healthy within %dms", hostPort, timeoutMs)
+			return fmt.Errorf("service at %s not healthy within %dms", baseURL, timeoutMs)
 		}
 
 		resp, err := client.Get(url)
@@ -170,6 +171,73 @@ func ImageTag(name string) string {
 	slug := strings.ToLower(name)
 	slug = strings.ReplaceAll(slug, " ", "-")
 	return "dl-benchmark-" + slug
+}
+
+// ContainerName returns a stable Docker container name for a solution.
+func ContainerName(name string) string {
+	slug := strings.ToLower(name)
+	slug = strings.ReplaceAll(slug, " ", "-")
+	return "dl-bench-" + slug
+}
+
+// CreateBenchmarkNetwork creates an isolated bridge network for a benchmark run.
+func CreateBenchmarkNetwork(ctx context.Context, cli *client.Client) (networkID, networkName string, err error) {
+	name := fmt.Sprintf("dl-benchmark-%d", time.Now().UnixMilli())
+	resp, createErr := cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"})
+	if createErr != nil {
+		return "", "", fmt.Errorf("network create: %w", createErr)
+	}
+	return resp.ID, name, nil
+}
+
+// RemoveNetwork removes the Docker network with the given ID.
+func RemoveNetwork(ctx context.Context, cli *client.Client, networkID string) error {
+	if err := cli.NetworkRemove(ctx, networkID); err != nil {
+		return fmt.Errorf("network remove: %w", err)
+	}
+	return nil
+}
+
+// ConnectSelfToNetwork connects the runner's own container to the given network.
+// Docker sets HOSTNAME to the short container ID, which is used to identify this container.
+func ConnectSelfToNetwork(ctx context.Context, cli *client.Client, networkID string) error {
+	hostname := os.Getenv("HOSTNAME")
+	if hostname == "" {
+		return fmt.Errorf("HOSTNAME env var not set")
+	}
+	if err := cli.NetworkConnect(ctx, networkID, hostname, nil); err != nil {
+		return fmt.Errorf("network connect self (%s): %w", hostname, err)
+	}
+	return nil
+}
+
+// RunContainerOnNetwork creates and starts a container on the given Docker network.
+// No host port binding is used; the container is reachable by name within the network.
+func RunContainerOnNetwork(ctx context.Context, cli *client.Client, tag string, containerPort int, networkName, containerName string) (string, error) {
+	portSpec := fmt.Sprintf("%d/tcp", containerPort)
+	natPort := nat.Port(portSpec)
+
+	resp, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image:        tag,
+			ExposedPorts: nat.PortSet{natPort: struct{}{}},
+		},
+		&container.HostConfig{},
+		&network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				networkName: {Aliases: []string{containerName}},
+			},
+		},
+		nil,
+		containerName,
+	)
+	if err != nil {
+		return "", fmt.Errorf("container create: %w", err)
+	}
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("container start: %w", err)
+	}
+	return resp.ID, nil
 }
 
 // createTarball creates an in-memory tar archive of the given directory.

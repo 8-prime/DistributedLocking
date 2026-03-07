@@ -11,6 +11,11 @@ import (
 	"github.com/docker/docker/client"
 )
 
+func isRunningInDocker() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
 func main() {
 	warmupFlag := flag.Duration("warmup", 5*time.Second, "warmup duration per scenario")
 	durationFlag := flag.Duration("duration", 15*time.Second, "measurement duration per scenario")
@@ -50,12 +55,31 @@ func main() {
 	}
 	defer cli.Close()
 
+	ctx := context.Background()
+
+	var networkName string
+	if isRunningInDocker() {
+		fmt.Println("Running in Docker; creating benchmark network ...")
+		networkID, name, err := CreateBenchmarkNetwork(ctx, cli)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create benchmark network: %v\n", err)
+			os.Exit(1)
+		}
+		defer RemoveNetwork(context.Background(), cli, networkID)
+		if err := ConnectSelfToNetwork(ctx, cli, networkID); err != nil {
+			fmt.Fprintf(os.Stderr, "connect self to network: %v\n", err)
+			os.Exit(1)
+		}
+		networkName = name
+		fmt.Printf("Benchmark network: %s\n", networkName)
+	}
+
 	report := Report{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	for _, dir := range solutionDirs {
-		result, err := benchmarkSolution(context.Background(), cli, dir, *warmupFlag, *durationFlag)
+		result, err := benchmarkSolution(ctx, cli, dir, *warmupFlag, *durationFlag, networkName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "benchmark %s: %v\n", dir, err)
 			continue
