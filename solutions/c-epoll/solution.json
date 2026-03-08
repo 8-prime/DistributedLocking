@@ -1,0 +1,6 @@
+{
+  "name": "C epoll In-Memory",
+  "description": "C with epoll, SO_REUSEPORT, sharded spinlocks, zero-copy parsing",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
