@@ -2,8 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zap = @import("zap");
 
-const N_SHARDS = std.Thread.getCpuCount();
-const N_THREADS = 20;
+const N_SHARDS = 256;
 const N_WORKERS = 1;
 
 const LockState = struct {
@@ -265,5 +264,6 @@ pub fn main() !void {
 
     try App.listen(.{ .interface = "0.0.0.0", .port = 8080 });
 
-    zap.start(.{ .threads = N_THREADS, .workers = N_WORKERS });
+    const cpu_count = std.Thread.getCpuCount() catch 4;
+    zap.start(.{ .threads = @intCast(cpu_count), .workers = N_WORKERS });
 }
