@@ -1,0 +1,6 @@
+{
+  "name": "Bun In-Memory",
+  "description": "Bun HTTP server with in-memory lock map — no mutexes needed (JS is single-threaded)",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}

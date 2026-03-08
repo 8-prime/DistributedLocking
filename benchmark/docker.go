@@ -217,6 +217,9 @@ func RunContainerOnNetwork(ctx context.Context, cli *client.Client, tag string, 
 	portSpec := fmt.Sprintf("%d/tcp", containerPort)
 	natPort := nat.Port(portSpec)
 
+	// Remove any leftover container with this name (e.g. from a previous aborted run).
+	_ = cli.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
+
 	resp, err := cli.ContainerCreate(ctx,
 		&container.Config{
 			Image:        tag,
