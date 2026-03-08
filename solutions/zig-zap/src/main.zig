@@ -143,7 +143,13 @@ const LockEndpoint = struct {
         }
     }
 
-    pub fn delete(e: *LockEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
+};
+
+const UnlockEndpoint = struct {
+    path: []const u8 = "/unlock/",
+    error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
+
+    pub fn post(e: *UnlockEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
         _ = e;
         const body = r.body orelse {
             r.setStatus(.bad_request);
@@ -256,9 +262,11 @@ pub fn main() !void {
     defer App.deinit();
 
     var lockEndpoint = LockEndpoint{};
+    var unlockEndpoint = UnlockEndpoint{};
     var locksEndpoint = LocksEndpoint{};
     var healthEndpoint = HealthEndpoint{};
     try App.register(&lockEndpoint);
+    try App.register(&unlockEndpoint);
     try App.register(&locksEndpoint);
     try App.register(&healthEndpoint);
 

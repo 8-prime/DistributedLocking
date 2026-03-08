@@ -54,6 +54,10 @@ const LockStore = struct {
         defer shard.rwlock.unlock();
 
         if (shard.map.get(key)) |existing| {
+            if (std.mem.eql(u8, existing.lockee, lockee)) {
+                // Idempotent re-acquire: same lockee, preserve since_ns.
+                return .acquired;
+            }
             if (!force) {
                 // Copy lockee into arena while lock is held (safe to use after release)
                 return .{ .conflict = try arena.dupe(u8, existing.lockee) };
@@ -177,7 +181,12 @@ fn handleRequest(
     alloc: std.mem.Allocator,
 ) !void {
     const method = req.head.method;
-    const target = req.head.target;
+    const raw_target = req.head.target;
+    // Strip trailing slash for uniform matching (except root "/").
+    const target = if (raw_target.len > 1 and raw_target[raw_target.len - 1] == '/')
+        raw_target[0 .. raw_target.len - 1]
+    else
+        raw_target;
 
     if (std.mem.eql(u8, target, "/healthz") and method == .GET) {
         return sendJson(req, 200, "{\"status\":\"ok\"}\n");
@@ -185,12 +194,11 @@ fn handleRequest(
     if (std.mem.eql(u8, target, "/locks") and method == .GET) {
         return handleList(req, store, alloc);
     }
-    if (std.mem.eql(u8, target, "/lock")) {
-        return switch (method) {
-            .POST => handleAcquire(req, store, alloc),
-            .DELETE => handleRelease(req, store, alloc),
-            else => sendStatus(req, 405),
-        };
+    if (std.mem.eql(u8, target, "/lock") and method == .POST) {
+        return handleAcquire(req, store, alloc);
+    }
+    if (std.mem.eql(u8, target, "/unlock") and method == .POST) {
+        return handleRelease(req, store, alloc);
     }
     return sendStatus(req, 404);
 }

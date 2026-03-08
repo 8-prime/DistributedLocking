@@ -90,7 +90,7 @@ func (w *worker) acquireRelease(ctx context.Context, abort func(error)) {
 		w.total.Add(1)
 		if err != nil {
 			if ctx.Err() == nil && isTimeout(err) {
-				abort(fmt.Errorf("DELETE /lock timed out after %s", time.Duration(elapsed)))
+				abort(fmt.Errorf("POST /unlock timed out after %s", time.Duration(elapsed)))
 			}
 			w.errors.Add(1)
 			continue
@@ -125,7 +125,7 @@ func (w *worker) deleteLock(ctx context.Context, key, lockee string) (int, error
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee,
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, w.baseURL+"/lock", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, w.baseURL+"/unlock", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := w.client.Do(req)
 	if err != nil {

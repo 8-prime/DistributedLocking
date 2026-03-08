@@ -317,7 +317,7 @@ static int uint_to_str(unsigned val, char *buf) {
 /* ── HTTP Request Parsing ──────────────────────────────────────── */
 
 typedef enum { METHOD_GET, METHOD_POST, METHOD_DELETE, METHOD_UNKNOWN } http_method_t;
-typedef enum { PATH_LOCK, PATH_LOCKS, PATH_HEALTHZ, PATH_UNKNOWN } http_path_t;
+typedef enum { PATH_LOCK, PATH_UNLOCK, PATH_LOCKS, PATH_HEALTHZ, PATH_UNKNOWN } http_path_t;
 
 typedef struct {
     http_method_t method;
@@ -347,12 +347,15 @@ static int parse_request(const char *buf, int len, http_request_t *req) {
     if (unlikely(!space2)) return 0;
     int path_len = (int)(space2 - path_start);
 
-    /* Match path — check /locks before /lock (longer prefix first) */
+    /* Match path — check /locks and /unlock before /lock (longer prefix first) */
     if (path_len >= 8 && memcmp(path_start, "/healthz", 8) == 0) {
         req->path = PATH_HEALTHZ;
     } else if (path_len >= 6 && memcmp(path_start, "/locks", 6) == 0 &&
                (path_len == 6 || (path_len == 7 && path_start[6] == '/'))) {
         req->path = PATH_LOCKS;
+    } else if (path_len >= 7 && memcmp(path_start, "/unlock", 7) == 0 &&
+               (path_len == 7 || (path_len == 8 && path_start[7] == '/'))) {
+        req->path = PATH_UNLOCK;
     } else if (path_len >= 5 && memcmp(path_start, "/lock", 5) == 0 &&
                (path_len == 5 || (path_len == 6 && path_start[5] == '/'))) {
         req->path = PATH_LOCK;
@@ -374,7 +377,7 @@ static int parse_request(const char *buf, int len, http_request_t *req) {
 
     /* Parse Content-Length for POST/DELETE */
     int content_length = 0;
-    if (req->method == METHOD_POST || req->method == METHOD_DELETE) {
+    if (req->method == METHOD_POST) {
         /* hdr_end points to the first \r of \r\n\r\n, so the last header
            line's \n is at hdr_end+1. Scan through hdr_end+2 to include it. */
         const char *scan_end = hdr_end + 2;
@@ -686,10 +689,10 @@ done:
 static int process_request(conn_t *conn, const http_request_t *req) {
     if (req->path == PATH_HEALTHZ && req->method == METHOD_GET)
         return handle_healthz(conn);
-    if (req->path == PATH_LOCK) {
-        if (req->method == METHOD_POST) return handle_post_lock(conn, req);
-        if (req->method == METHOD_DELETE) return handle_delete_lock(conn, req);
-    }
+    if (req->path == PATH_LOCK && req->method == METHOD_POST)
+        return handle_post_lock(conn, req);
+    if (req->path == PATH_UNLOCK && req->method == METHOD_POST)
+        return handle_delete_lock(conn, req);
     if (req->path == PATH_LOCKS && req->method == METHOD_GET)
         return handle_get_locks(conn);
     return build_response(conn->write_buf, HTTP_404, sizeof(HTTP_404) - 1, "not found", 9);

@@ -140,7 +140,7 @@ func sendUnlock(client *http.Client, baseURL, key, lockee string) (int, error) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee,
 	})
-	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/lock/", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/unlock/", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := client.Do(req)
 	if err != nil {

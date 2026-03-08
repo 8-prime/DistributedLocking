@@ -9,7 +9,7 @@ builder.Services.AddSingleton<LockService>();
 var app = builder.Build();
 
 app.MapPost("/lock", LockHandler);
-app.MapDelete("/lock", UnLockHandler);
+app.MapPost("/unlock", UnLockHandler);
 app.MapGet("/locks", GetLocksHandler);
 app.MapGet("/healthz", () => TypedResults.Text("{\"status\": \"ok\"}", "application/json"));
 
