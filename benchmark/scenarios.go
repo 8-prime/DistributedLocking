@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,7 @@ func (w *worker) postLock(ctx context.Context, key, lockee string, force bool) (
 	if err != nil {
 		return 0, err
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return resp.StatusCode, nil
 }
@@ -129,6 +131,7 @@ func (w *worker) deleteLock(ctx context.Context, key, lockee string) (int, error
 	if err != nil {
 		return 0, err
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return resp.StatusCode, nil
 }
@@ -340,6 +343,7 @@ func runListHeavy(baseURL string, warmup, duration time.Duration) (ScenarioResul
 						errCount.Add(1)
 						continue
 					}
+					io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 					if resp.StatusCode != http.StatusOK {
 						errCount.Add(1)
