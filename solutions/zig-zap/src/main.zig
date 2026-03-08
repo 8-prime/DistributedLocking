@@ -2,8 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zap = @import("zap");
 
-const N_SHARDS = 64;
-const N_THREADS = 4;
+const N_SHARDS = std.Thread.getCpuCount();
+const N_THREADS = 20;
 const N_WORKERS = 1;
 
 const LockState = struct {
