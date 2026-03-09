@@ -45,20 +45,6 @@ docker run --rm \
   dl-benchmark-runner
 ```
 
-_Windows (PowerShell) — Docker Desktop exposes a named pipe instead of a socket. Use forward slashes to avoid PowerShell escaping issues:_
-```powershell
-docker run --rm `
-  -v //./pipe/docker_engine://./pipe/docker_engine `
-  -v "${PWD}\results:/results" `
-  dl-benchmark-runner
-```
-
-If that fails with a pipe-not-found error, check the actual pipe name Docker Desktop is using on your machine:
-```powershell
-Get-ChildItem //./pipe/ | Where-Object { $_.Name -like "*docker*" }
-```
-Common alternatives are `dockerDesktopLinuxEngine` or `dockerDesktopEngine`. Substitute whichever appears on both sides of the `-v` mount.
-
 To override duration or warmup, append flags after the image name:
 
 ```bash
@@ -75,12 +61,11 @@ Results are written to `results/` as both JSON and Markdown.
 
 Summary (RPS / p99 ms):
 
-| Scenario         | Go In-Memory    | Zig In-Memory   | Zig ZAP In-Memory |
-| ---------------- | --------------- | --------------- | ----------------- |
-| sequential       | 1 132 / 2.2 ms  | 486 / 4.2 ms    | 2 670 / 1.1 ms    |
-| low_concurrency  | 2 296 / 19.2 ms | 674 / 51.0 ms   | 18 919 / 1.1 ms   |
-| high_concurrency | 197 / 7.8 ms    | 776 / 1323.3 ms | 49 954 / 4.7 ms   |
-| contention       | 728 / 821.7 ms  | 488 / 822.1 ms  | 43 145 / 2.7 ms   |
-| list_heavy       | 964 / 613.2 ms  | —               | 34 628 / 1.6 ms   |
+| Scenario         | Bun In-Memory     | C epoll In-Memory  | Dotnet Eventloop   | Dotnet In-Memory   | Go In-Memory      | Zig In-Memory     | Zig ZAP In-Memory  |
+| ---------------- | ----------------- | ------------------ | ------------------ | ------------------ | ----------------- | ----------------- | ------------------ |
+| sequential       | 13035 rps / 0.2ms | 15447 rps / 0.1ms  | 7523 rps / 0.3ms   | 7929 rps / 0.2ms   | 5573 rps / 0.3ms  | 14129 rps / 0.2ms | 13422 rps / 0.1ms  |
+| low_concurrency  | 74870 rps / 0.7ms | 75686 rps / 0.6ms  | 50178 rps / 0.9ms  | 49699 rps / 0.8ms  | 24906 rps / 1.0ms | —                 | 57928 rps / 0.6ms  |
+| high_concurrency | 87800 rps / 2.9ms | 264050 rps / 2.8ms | 160400 rps / 2.7ms | 173973 rps / 2.7ms | 73248 rps / 4.8ms | —                 | 213985 rps / 2.5ms |
+| contention       | 93542 rps / 1.7ms | 265596 rps / 1.5ms | 120123 rps / 1.8ms | 124276 rps / 1.8ms | 73416 rps / 2.5ms | —                 | 169372 rps / 1.7ms |
+| list_heavy       | 78136 rps / 1.2ms | 148854 rps / 0.9ms | 81312 rps / 1.3ms  | 87101 rps / 1.3ms  | 45823 rps / 1.7ms | —                 | 111246 rps / 1.2ms |
 
-The Zig ZAP solution leads across all scenarios by a wide margin. The Go in-memory solution degrades sharply under high concurrency (nearly all requests error out at 100 workers). The Zig in-memory solution didn't complete the `list_heavy` scenario and shows significant lock leakage, suggesting correctness issues under load.
