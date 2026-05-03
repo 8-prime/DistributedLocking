@@ -5,7 +5,7 @@
 | Endpoint   | Method | Description                             |
 | ---------- | ------ | --------------------------------------- |
 | `/lock`    | POST   | Acquire a lock                          |
-| `/lock`    | DELETE | Release a lock                          |
+| `/unlock`  | POST   | Release a lock                          |
 | `/locks`   | GET    | List all held locks                     |
 | `/healthz` | GET    | Health check (always 200 OK when ready) |
 
