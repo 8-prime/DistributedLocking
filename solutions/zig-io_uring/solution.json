@@ -1,0 +1,6 @@
+{
+  "name": "ZIG io_uring",
+  "description": "ZIG with io_uring",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
