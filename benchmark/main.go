@@ -19,11 +19,12 @@ func isRunningInDocker() bool {
 func main() {
 	warmupFlag := flag.Duration("warmup", 5*time.Second, "warmup duration per scenario")
 	durationFlag := flag.Duration("duration", 15*time.Second, "measurement duration per scenario")
+	validateOnlyFlag := flag.Bool("validate-only", false, "build and validate spec compliance for each solution, then exit")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: benchmark [--duration 15s] [--warmup 5s] <solutions-dir|solution-dir> ...")
+		fmt.Fprintln(os.Stderr, "usage: benchmark [--duration 15s] [--warmup 5s] [--validate-only] <solutions-dir|solution-dir> ...")
 		os.Exit(1)
 	}
 
@@ -72,6 +73,23 @@ func main() {
 		}
 		networkName = name
 		fmt.Printf("Benchmark network: %s\n", networkName)
+	}
+
+	if *validateOnlyFlag {
+		failed := 0
+		for _, dir := range solutionDirs {
+			if err := validateSolution(ctx, cli, dir, networkName); err != nil {
+				fmt.Fprintf(os.Stderr, "  FAIL: %v\n", err)
+				failed++
+			} else {
+				fmt.Println("  PASS")
+			}
+		}
+		fmt.Printf("\n%d/%d solutions passed validation.\n", len(solutionDirs)-failed, len(solutionDirs))
+		if failed > 0 {
+			os.Exit(1)
+		}
+		return
 	}
 
 	report := Report{

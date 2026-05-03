@@ -43,6 +43,59 @@ func discoverSolutions(root string) ([]string, error) {
 	return dirs, nil
 }
 
+func validateSolution(ctx context.Context, cli *client.Client, dir string, networkName string) error {
+	manifestPath := filepath.Join(dir, "solution.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read solution.json: %w", err)
+	}
+	var manifest SolutionManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("parse solution.json: %w", err)
+	}
+
+	tag := ImageTag(manifest.Name)
+	fmt.Printf("\n=== %s ===\n", manifest.Name)
+	fmt.Printf("Building image %s ...\n", tag)
+	if err := BuildImage(ctx, cli, dir, tag); err != nil {
+		return fmt.Errorf("build image: %w", err)
+	}
+
+	fmt.Println("Starting container ...")
+	var containerID, baseURL string
+	if networkName != "" {
+		cName := ContainerName(manifest.Name)
+		containerID, err = RunContainerOnNetwork(ctx, cli, tag, manifest.Port, networkName, cName)
+		if err != nil {
+			return fmt.Errorf("run container: %w", err)
+		}
+		baseURL = fmt.Sprintf("http://%s:%d", cName, manifest.Port)
+	} else {
+		var hostPort int
+		containerID, hostPort, err = RunContainer(ctx, cli, tag, manifest.Port)
+		if err != nil {
+			return fmt.Errorf("run container: %w", err)
+		}
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d", hostPort)
+	}
+	defer func() {
+		if stopErr := StopContainer(ctx, cli, containerID); stopErr != nil {
+			fmt.Fprintf(os.Stderr, "stop container %s: %v\n", containerID, stopErr)
+		}
+	}()
+
+	timeoutMs := manifest.StartupTimeoutMs
+	if timeoutMs == 0 {
+		timeoutMs = 10000
+	}
+	fmt.Println("Waiting for service ...")
+	if err := WaitHealthy(ctx, baseURL, timeoutMs); err != nil {
+		return fmt.Errorf("wait healthy: %w", err)
+	}
+
+	return validateSpec(baseURL)
+}
+
 func benchmarkSolution(ctx context.Context, cli *client.Client, dir string, warmup, duration time.Duration, networkName string) (SolutionResult, error) {
 	// Load manifest.
 	manifestPath := filepath.Join(dir, "solution.json")
