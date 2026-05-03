@@ -49,204 +49,177 @@ fn fmtRfc3339(ns: i128, arena: Allocator) ![]const u8 {
     });
 }
 
-const LockEndpoint = struct {
-    path: []const u8 = "/lock/",
-    error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
+// Matches path exactly, tolerating an optional trailing slash on actual.
+fn matchPath(actual: []const u8, expected: []const u8) bool {
+    if (std.mem.eql(u8, actual, expected)) return true;
+    return actual.len == expected.len + 1 and
+        actual[actual.len - 1] == '/' and
+        std.mem.eql(u8, actual[0..expected.len], expected);
+}
 
-    pub fn post(e: *LockEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
-        _ = e;
-        const body = r.body orelse {
-            r.setStatus(.bad_request);
-            return r.sendBody("missing body");
-        };
+fn handleLock(arena: Allocator, ctx: *LockContext, r: zap.Request) !void {
+    const body = r.body orelse {
+        r.setStatus(.bad_request);
+        return r.sendBody("missing body");
+    };
 
-        // arena is request-scoped — fine for parsing, NOT for storing
-        const parsed = std.json.parseFromSlice(
-            LockReq,
-            arena,
-            body,
-            .{ .ignore_unknown_fields = true },
-        ) catch {
-            r.setStatus(.bad_request);
-            return r.sendBody("invalid JSON");
-        };
-        // no defer deinit — arena owns it, cleaned up after handler returns
+    const parsed = std.json.parseFromSlice(LockReq, arena, body, .{ .ignore_unknown_fields = true }) catch {
+        r.setStatus(.bad_request);
+        return r.sendBody("invalid JSON");
+    };
+    const req = parsed.value;
 
-        const req: LockReq = parsed.value;
+    const h = std.hash.Wyhash.hash(0, req.key);
+    const shard = &ctx.shards[h & (N_SHARDS - 1)];
 
-        // shard selection
-        const h = std.hash.Wyhash.hash(0, req.key);
-        const shard = &context.shards[h & (N_SHARDS - 1)];
+    const ResultTag = enum { acquired, conflict };
+    const Result = struct { tag: ResultTag, current_lockee: []const u8 };
 
-        const ResultTag = enum { acquired, conflict };
-        const Result = struct {
-            tag: ResultTag,
-            // For conflict: the lockee who currently holds it.
-            // For acquired: unused, but set to req.lockee for simplicity.
-            current_lockee: []const u8,
-        };
+    const result: Result = blk: {
+        shard.mutex.lock();
+        defer shard.mutex.unlock();
 
-        const result: Result = blk: {
-            shard.mutex.lock();
-            defer shard.mutex.unlock();
+        const gpa = shard.locks.allocator;
 
-            const gpa = shard.locks.allocator;
-
-            if (shard.locks.get(req.key)) |existing| {
-                // Same lockee: idempotent re-acquire, preserve since_ns.
-                if (std.mem.eql(u8, existing.lockee, req.lockee)) {
-                    break :blk .{ .tag = .acquired, .current_lockee = existing.lockee };
-                }
-                // Different lockee without force: conflict.
-                if (req.force != true) {
-                    break :blk .{ .tag = .conflict, .current_lockee = existing.lockee };
-                }
-                // Force: remove old entry and free its heap strings.
-                if (shard.locks.fetchRemove(req.key)) |old| {
-                    gpa.free(old.key);
-                    gpa.free(old.value.lockee);
-                }
+        if (shard.locks.get(req.key)) |existing| {
+            if (std.mem.eql(u8, existing.lockee, req.lockee)) {
+                break :blk .{ .tag = .acquired, .current_lockee = existing.lockee };
             }
-
-            // New acquisition (fresh lock or forced takeover).
-            const key_copy = try gpa.dupe(u8, req.key);
-            errdefer gpa.free(key_copy);
-            const lockee_copy = try gpa.dupe(u8, req.lockee);
-            errdefer gpa.free(lockee_copy);
-
-            try shard.locks.put(key_copy, .{
-                .key = key_copy,
-                .lockee = lockee_copy,
-                .since_ns = std.time.nanoTimestamp(),
-            });
-            break :blk .{ .tag = .acquired, .current_lockee = lockee_copy };
-        };
-
-        // Send response AFTER mutex released.
-        switch (result.tag) {
-            .acquired => {
-                r.setStatus(.ok);
-                const response_body = std.fmt.allocPrint(arena, "{{\"locked\":true,\"key\":\"{s}\",\"lockee\":\"{s}\"}}\n", .{ req.key, req.lockee }) catch {
-                    r.setStatus(.internal_server_error);
-                    return r.sendBody("failed to format response");
-                };
-                return r.sendBody(response_body);
-            },
-            .conflict => {
-                r.setStatus(.conflict);
-                const response_body = std.fmt.allocPrint(arena, "{{\"locked\":false,\"key\":\"{s}\",\"currentLockee\":\"{s}\"}}\n", .{ req.key, result.current_lockee }) catch {
-                    r.setStatus(.internal_server_error);
-                    return r.sendBody("failed to format response");
-                };
-                return r.sendBody(response_body);
-            },
-        }
-    }
-
-};
-
-const UnlockEndpoint = struct {
-    path: []const u8 = "/unlock/",
-    error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
-
-    pub fn post(e: *UnlockEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
-        _ = e;
-        const body = r.body orelse {
-            r.setStatus(.bad_request);
-            return r.sendBody("missing body");
-        };
-
-        const parsed = std.json.parseFromSlice(
-            LockReq,
-            arena,
-            body,
-            .{ .ignore_unknown_fields = true },
-        ) catch {
-            r.setStatus(.bad_request);
-            return r.sendBody("invalid JSON");
-        };
-
-        const req: LockReq = parsed.value;
-
-        const h = std.hash.Wyhash.hash(0, req.key);
-        const shard = &context.shards[h & (N_SHARDS - 1)];
-
-        const ReleaseStatus = enum { released, not_found, forbidden };
-        const status: ReleaseStatus = blk: {
-            shard.mutex.lock();
-            defer shard.mutex.unlock();
-
-            const existing = shard.locks.get(req.key);
-            if (existing == null) break :blk .not_found;
-            if (!std.mem.eql(u8, existing.?.lockee, req.lockee)) break :blk .forbidden;
+            if (req.force != true) {
+                break :blk .{ .tag = .conflict, .current_lockee = existing.lockee };
+            }
             if (shard.locks.fetchRemove(req.key)) |old| {
-                shard.locks.allocator.free(old.key);
-                shard.locks.allocator.free(old.value.lockee);
-            }
-            break :blk .released;
-        };
-
-        // Send response AFTER mutex released
-        switch (status) {
-            .released => r.setStatus(.ok),
-            .not_found => {
-                r.setStatus(.not_found);
-                return r.sendBody("not found");
-            },
-            .forbidden => {
-                r.setStatus(.forbidden);
-                return r.sendBody("lockee mismatch");
-            },
-        }
-    }
-};
-
-const LocksEndpoint = struct {
-    path: []const u8 = "/locks/",
-    error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
-
-    pub fn get(e: *LocksEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
-        _ = e;
-        var all_locks = std.ArrayListUnmanaged(LockState){};
-        defer all_locks.deinit(arena);
-        for (&context.shards) |*shard| {
-            shard.mutex.lock();
-            defer shard.mutex.unlock();
-
-            var it = shard.locks.iterator();
-            while (it.next()) |kv| {
-                const lock = kv.value_ptr.*;
-                try all_locks.append(arena, lock);
+                gpa.free(old.key);
+                gpa.free(old.value.lockee);
             }
         }
 
-        var json_buf = std.ArrayListUnmanaged(u8){};
-        defer json_buf.deinit(arena);
-        try json_buf.appendSlice(arena, "{\"locks\":[");
-        for (all_locks.items, 0..) |lock, i| {
-            if (i > 0) try json_buf.appendSlice(arena, ",");
-            const since_str = try fmtRfc3339(lock.since_ns, arena);
-            const entry = try std.fmt.allocPrint(arena, "{{\"key\":\"{s}\",\"lockee\":\"{s}\",\"since\":\"{s}\"}}", .{ lock.key, lock.lockee, since_str });
-            try json_buf.appendSlice(arena, entry);
-        }
-        try json_buf.appendSlice(arena, "]}");
+        const key_copy = try gpa.dupe(u8, req.key);
+        errdefer gpa.free(key_copy);
+        const lockee_copy = try gpa.dupe(u8, req.lockee);
+        errdefer gpa.free(lockee_copy);
 
-        r.setStatus(.ok);
-        try r.sendBody(json_buf.items);
+        try shard.locks.put(key_copy, .{
+            .key = key_copy,
+            .lockee = lockee_copy,
+            .since_ns = std.time.nanoTimestamp(),
+        });
+        break :blk .{ .tag = .acquired, .current_lockee = lockee_copy };
+    };
+
+    switch (result.tag) {
+        .acquired => {
+            r.setStatus(.ok);
+            const resp = try std.fmt.allocPrint(arena, "{{\"locked\":true,\"key\":\"{s}\",\"lockee\":\"{s}\"}}\n", .{ req.key, req.lockee });
+            return r.sendBody(resp);
+        },
+        .conflict => {
+            r.setStatus(.conflict);
+            const resp = try std.fmt.allocPrint(arena, "{{\"locked\":false,\"key\":\"{s}\",\"currentLockee\":\"{s}\"}}\n", .{ req.key, result.current_lockee });
+            return r.sendBody(resp);
+        },
     }
-};
+}
 
-const HealthEndpoint = struct {
-    path: []const u8 = "/healthz/",
+fn handleUnlock(arena: Allocator, ctx: *LockContext, r: zap.Request) !void {
+    const body = r.body orelse {
+        r.setStatus(.bad_request);
+        return r.sendBody("missing body");
+    };
+
+    const parsed = std.json.parseFromSlice(LockReq, arena, body, .{ .ignore_unknown_fields = true }) catch {
+        r.setStatus(.bad_request);
+        return r.sendBody("invalid JSON");
+    };
+    const req = parsed.value;
+
+    const h = std.hash.Wyhash.hash(0, req.key);
+    const shard = &ctx.shards[h & (N_SHARDS - 1)];
+
+    const ReleaseStatus = enum { released, not_found, forbidden };
+    const status: ReleaseStatus = blk: {
+        shard.mutex.lock();
+        defer shard.mutex.unlock();
+
+        const existing = shard.locks.get(req.key);
+        if (existing == null) break :blk .not_found;
+        if (!std.mem.eql(u8, existing.?.lockee, req.lockee)) break :blk .forbidden;
+        if (shard.locks.fetchRemove(req.key)) |old| {
+            shard.locks.allocator.free(old.key);
+            shard.locks.allocator.free(old.value.lockee);
+        }
+        break :blk .released;
+    };
+
+    switch (status) {
+        .released => r.setStatus(.ok),
+        .not_found => {
+            r.setStatus(.not_found);
+            return r.sendBody("not found");
+        },
+        .forbidden => {
+            r.setStatus(.forbidden);
+            return r.sendBody("lockee mismatch");
+        },
+    }
+}
+
+fn handleListLocks(arena: Allocator, ctx: *LockContext, r: zap.Request) !void {
+    var all_locks = std.ArrayListUnmanaged(LockState){};
+    defer all_locks.deinit(arena);
+    for (&ctx.shards) |*shard| {
+        shard.mutex.lock();
+        defer shard.mutex.unlock();
+        var it = shard.locks.iterator();
+        while (it.next()) |kv| {
+            try all_locks.append(arena, kv.value_ptr.*);
+        }
+    }
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(arena);
+    try buf.appendSlice(arena, "{\"locks\":[");
+    for (all_locks.items, 0..) |lock, i| {
+        if (i > 0) try buf.appendSlice(arena, ",");
+        const since_str = try fmtRfc3339(lock.since_ns, arena);
+        const entry = try std.fmt.allocPrint(arena, "{{\"key\":\"{s}\",\"lockee\":\"{s}\",\"since\":\"{s}\"}}", .{ lock.key, lock.lockee, since_str });
+        try buf.appendSlice(arena, entry);
+    }
+    try buf.appendSlice(arena, "]}");
+
+    r.setStatus(.ok);
+    try r.sendBody(buf.items);
+}
+
+// Single dispatcher endpoint at "/" — avoids EndpointPathShadowError that fires
+// when /lock and /locks are registered separately (one is a prefix of the other).
+const Dispatcher = struct {
+    path: []const u8 = "/",
     error_strategy: zap.Endpoint.ErrorStrategy = .log_to_response,
 
-    pub fn get(e: *HealthEndpoint, arena: Allocator, context: *LockContext, r: zap.Request) !void {
-        _ = e;
-        _ = arena;
-        _ = context;
+    pub fn get(self: *Dispatcher, arena: Allocator, ctx: *LockContext, r: zap.Request) !void {
+        _ = self;
+        const path = r.path orelse return;
+        if (matchPath(path, "/healthz")) {
+            r.setStatus(.ok);
+            return r.sendBody("{\"status\":\"ok\"}\n");
+        } else if (matchPath(path, "/locks")) {
+            return handleListLocks(arena, ctx, r);
+        }
+        r.setStatus(.not_found);
+        try r.sendBody("not found");
+    }
 
-        r.setStatus(.ok);
-        try r.sendBody("{\"status\":\"ok\"}\n");
+    pub fn post(self: *Dispatcher, arena: Allocator, ctx: *LockContext, r: zap.Request) !void {
+        _ = self;
+        const path = r.path orelse return;
+        if (matchPath(path, "/lock")) {
+            return handleLock(arena, ctx, r);
+        } else if (matchPath(path, "/unlock")) {
+            return handleUnlock(arena, ctx, r);
+        }
+        r.setStatus(.not_found);
+        try r.sendBody("not found");
     }
 };
 
@@ -261,14 +234,8 @@ pub fn main() !void {
     try App.init(allocator, &lockContext, .{});
     defer App.deinit();
 
-    var lockEndpoint = LockEndpoint{};
-    var unlockEndpoint = UnlockEndpoint{};
-    var locksEndpoint = LocksEndpoint{};
-    var healthEndpoint = HealthEndpoint{};
-    try App.register(&lockEndpoint);
-    try App.register(&unlockEndpoint);
-    try App.register(&locksEndpoint);
-    try App.register(&healthEndpoint);
+    var dispatcher = Dispatcher{};
+    try App.register(&dispatcher);
 
     try App.listen(.{ .interface = "0.0.0.0", .port = 8080 });
 
