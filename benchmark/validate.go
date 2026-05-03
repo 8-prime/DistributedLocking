@@ -116,7 +116,7 @@ func sendLock(client *http.Client, baseURL, key, lockee string, force bool) (int
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee, "force": force,
 	})
-	req, _ := http.NewRequest(http.MethodPost, baseURL+"/lock/", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/lock", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := client.Do(req)
 	if err != nil {
@@ -140,7 +140,7 @@ func sendUnlock(client *http.Client, baseURL, key, lockee string) (int, error) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"key": key, "lockee": lockee,
 	})
-	req, _ := http.NewRequest(http.MethodPost, baseURL+"/unlock/", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/unlock", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := client.Do(req)
 	if err != nil {
@@ -154,7 +154,7 @@ func sendUnlock(client *http.Client, baseURL, key, lockee string) (int, error) {
 // Returns ("", nil) if the entry is not present, or an error that includes
 // the raw response body when decoding fails or the key is simply absent.
 func findLockSince(client *http.Client, baseURL, key string) (string, error) {
-	req, _ := http.NewRequest(http.MethodGet, baseURL+"/locks/", nil)
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/locks", nil)
 	httpResp, err := client.Do(req)
 	if err != nil {
 		return "", err

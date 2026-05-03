@@ -28,13 +28,11 @@ func (s *store) acquire(key, lockee string, force bool) (Lock, bool) {
 	existing, ok := s.locks[key]
 	if ok {
 		if existing.Lockee == lockee {
-			// Idempotent re-acquire: preserve the original since timestamp.
 			return existing, true
 		}
 		if !force {
 			return existing, false
 		}
-		// Force: fall through to overwrite with new since.
 	}
 	l := Lock{Key: key, Lockee: lockee, Since: time.Now().UTC()}
 	s.locks[key] = l
@@ -73,19 +71,39 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+type lockOKResp struct {
+	Locked bool   `json:"locked"`
+	Key    string `json:"key"`
+	Lockee string `json:"lockee"`
+}
+
+type lockConflictResp struct {
+	Locked        bool   `json:"locked"`
+	Key           string `json:"key"`
+	CurrentLockee string `json:"currentLockee"`
+}
+
+type lockListEntry struct {
+	Key    string `json:"key"`
+	Lockee string `json:"lockee"`
+	Since  string `json:"since"`
+}
+
+type lockListResp struct {
+	Locks []lockListEntry `json:"locks"`
+}
+
 func main() {
 	s := newStore()
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/healthz/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, struct {
+			Status string `json:"status"`
+		}{"ok"})
 	})
 
-	mux.HandleFunc("/lock/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("POST /lock", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key    string `json:"key"`
 			Lockee string `json:"lockee"`
@@ -102,25 +120,13 @@ func main() {
 
 		l, acquired := s.acquire(req.Key, req.Lockee, req.Force)
 		if acquired {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"locked": true,
-				"key":    l.Key,
-				"lockee": l.Lockee,
-			})
+			writeJSON(w, http.StatusOK, lockOKResp{Locked: true, Key: l.Key, Lockee: l.Lockee})
 		} else {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"locked":        false,
-				"key":           req.Key,
-				"currentLockee": l.Lockee,
-			})
+			writeJSON(w, http.StatusConflict, lockConflictResp{Locked: false, Key: req.Key, CurrentLockee: l.Lockee})
 		}
 	})
 
-	mux.HandleFunc("/unlock/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("POST /unlock", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key    string `json:"key"`
 			Lockee string `json:"lockee"`
@@ -142,22 +148,13 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("/locks/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("GET /locks", func(w http.ResponseWriter, r *http.Request) {
 		locks := s.list()
-		type lockResp struct {
-			Key    string `json:"key"`
-			Lockee string `json:"lockee"`
-			Since  string `json:"since"`
-		}
-		resp := make([]lockResp, len(locks))
+		entries := make([]lockListEntry, len(locks))
 		for i, l := range locks {
-			resp[i] = lockResp{Key: l.Key, Lockee: l.Lockee, Since: l.Since.Format(time.RFC3339)}
+			entries[i] = lockListEntry{Key: l.Key, Lockee: l.Lockee, Since: l.Since.Format(time.RFC3339)}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"locks": resp})
+		writeJSON(w, http.StatusOK, lockListResp{Locks: entries})
 	})
 
 	http.ListenAndServe(":8080", mux)
