@@ -1,0 +1,6 @@
+{
+  "name": "Go Sharded",
+  "description": "Simple Go HTTP server sharded mutex and in-memory lock map",
+  "port": 8080,
+  "startupTimeoutMs": 5000
+}
